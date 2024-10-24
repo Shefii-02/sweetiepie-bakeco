@@ -1,0 +1,102 @@
+@import url(https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css);
+
+.text-overflow {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+button.nav-link.text-dark.fw-semibold {
+    border-bottom: 2px solid #ffffff;
+}
+
+button.nav-link.text-dark.fw-semibold.active {
+    border-bottom: 2px solid #333;
+}
+
+button.nav-link.text-dark.fw-semibold:hover {
+    border-bottom: 2px solid #333;
+}
+
+.hidden.sm\:flex-1.sm\:flex.sm\:items-center.sm\:justify-between {
+    margin-top: 10px;
+}
+
+#loader-overlay .loader {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+}
+
+.hover-light:hover {
+    background: var(--bs-light);
+}
+
+.product-variation:checked+label {
+    background: var(--primary) !important;
+    color: #fff;
+}
+
+.app-container.w-100.h-100.container-fluid {
+    padding-top: 88px;
+}
+
+.app-container .topbar {
+    top: 88px;
+}
+
+.product-loading i {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    color: #fff;
+    z-index: 99999999;
+    font-size: xxx-large;
+    transform: translate(-50%, -50%);
+    animation: rotation 1s infinite linear;
+}
+
+.product-loading {
+    position: fixed;
+    width: 100%;
+    height: 100%;
+    z-index: 9999;
+    background: #33333314;
+    top: 0;
+    left: 0;
+}
+
+@keyframes rotation {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(359deg);
+    }
+}
+
+
+header {
+    top: 0 !important;
+}
+
+section.has-cat {
+    height: 300px;
+}
+
+section.product-listing-banner.no-cat {
+    height: 150px;
+}
+
+.extra-small {
+    font-size: 1rem;
+}
+
+section.has-cat {
+    height: 300px;
+    background-repeat: no-repeat !important;
+    background-size: cover !important;
+    background-position: center bottom !important;
+}

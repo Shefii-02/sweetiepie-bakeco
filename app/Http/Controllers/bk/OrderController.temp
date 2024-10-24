@@ -1,0 +1,1121 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+use App\Models\Basket;
+use App\Models\Item;
+use App\Models\ProductVariation;
+use Illuminate\Support\Facades\Cookie;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Http\Response;
+use App\Models\Store;
+use App\Models\Shipping;
+use App\Models\Order;
+use App\Models\Address;
+use App\Models\OrderPayment;
+use App\Models\TaxValue;
+use App\Models\Tax;
+use App\Models\City;
+use App\Models\Province;
+use App\Models\Coupon;
+use App\Models\Myaddress;
+use App\Models\Category;
+use App\Models\Product;
+use App\Models\User;
+use Hash;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Queue;
+use App\Jobs\SendDataJob;
+
+use Mail;
+use App\Mail\OrderInvoiceMail;
+use App\Mail\OrderNotification;
+use App\Http\Requests\CheckoutFormRequest;
+use App\Models\Subscribe;
+use App\Mail\SignupMail;
+    
+use App\Library\Moneris\mpgTransaction;
+use App\Library\Moneris\CofInfo;
+use App\Library\Moneris\mpgRequest;
+use App\Library\Moneris\mpgHttpsPost;
+
+
+use Illuminate\Support\Facades\Validator;
+
+
+class OrderController extends Controller
+{
+    
+    use \App\Service\Service;
+    public function create_sessions(Request $request){
+        if($request->ordertype == 'delivery'){
+             $validator = Validator::make($request->all(), [
+                'ordertype' => 'bail|required',
+                'city'  => 'bail|required',
+                'street_address'=> 'bail|required',
+            ]);
+        }
+        else
+        {
+             $validator = Validator::make($request->all(), [
+                'ordertype' => 'bail|required',
+                'pickup_store'  => 'bail|required',
+            ]);
+        }
+        
+         if ($validator->fails()) {
+            return redirect()->back()
+                ->withErrors($validator);
+        }
+        
+        //create a session data
+        try{
+            
+            //unique session inside check  other waise create new one 
+            if (session()->has('session_string')) {
+                $randomString =session('session_string');
+            }
+            else
+            {
+                $randomString = Str::random(45);
+            }
+            
+            
+            if($request->ordertype == 'pickup'){
+                $store = Store::where('id',$request->pickup_store)->first() ?? abort(404);
+                session(['identity_place'   => $store->name,
+                        'pickup_id'         => $store->id,
+                        'postalcode'        => $store->postal,
+                        'city'              => $store->city,
+                        'shipping_location' => $store->address]);
+            }
+            else if($request->ordertype == 'delivery'){
+               session(['identity_place'    => $request->city,
+                        'pickup_id'         => NULL,
+                        'postalcode'        => $request->postal,
+                        'city'              => $request->city,
+                        'shipping_location' => $request->street_address]);
+            }
+            else{
+               die('Invalid Request');
+            }
+            
+            session(['ordertype' => $request->ordertype,'session_string' => $randomString]);
+            
+            //already basket order type check and clear cart Items
+            if (session()->has('session_string')) {
+                $session_string = session('session_string');
+                $basket = Basket::where('session',$session_string)->where('status',0)->first();
+                if($basket){
+                    if($request->ordertype <> $basket->order_type){
+                        Item::where('basket_id',$basket->id)->delete();
+                    }
+                    
+                    $basket->pickup_id   = session('pickup_id');
+                    $basket->shipping_location = session('shipping_location');
+                    $basket->sel_place   = session('identity_place');
+                    $basket->postal      =session('postalcode');
+                    $basket->city        =session('city');
+                    $basket->order_type  =session('ordertype');
+                    $basket->save();
+                }
+            }
+            //end
+            if($request->has('redirect') && $request->redirect != ''){
+                return redirect($request->redirect);
+            }
+            else{
+             return redirect()->back(); 
+            }
+        }
+        catch(Exception $e)
+        {
+            dd($e);
+        }
+    //end
+    }
+    
+    
+    public function addToBasket(Request $request){
+        $response = array();
+        $response['result'] = 0;
+        $response['cart_count'] = 0;
+        
+            if (session()->has('session_string')) {
+                $session_string = session('session_string');
+                $basket = Basket::where('session',$session_string)->where('status',0)->first();
+                //if basket not created then create a new one
+                if(!$basket){
+                    $basket = new Basket();
+                    $basket->session = $session_string;
+                    $basket->pickup_id   = session('pickup_id');
+                    $basket->shipping_location = session('shipping_location');
+                    $basket->sel_place   = session('identity_place');
+                    $basket->postal      =session('postalcode');
+                    $basket->city        =session('city');
+                    $basket->order_type  =session('ordertype');
+                    $basket->save();
+                }
+                
+                $pdct_vari          = ProductVariation::with('products')->where('id',$request->pdct_id)->first();
+                $tax_id = $pdct_vari->products[0]->tax_id ?? '';
+            
+                if($tax_id == NULL || $tax_id == ''){
+                    $taxvalue = 0;
+                }
+                else
+                {
+                    $province = Province::where('code','ON')->pluck('master_id')->first();
+                    $tax = Tax::whereMasterId($tax_id)->first() ?? '0';
+                  
+                    if($tax){
+                        $taxvalue = TaxValue::where('tax_id',$tax->id)->where('province_id',$province)->pluck('tax_percentage')->first() ?? '0';   
+                    }
+                    if(!$tax){
+                        $taxvalue = 0;
+                    }
+                }
+             
+                // $taxvalue = 13;
+                
+                if($pdct_vari){
+                    $items = Item::where('product_sku',$pdct_vari->sku)->where('basket_id',$basket->id)->first();
+                    if(!$items){
+                    	$items                  = new Item();
+                    	$items->basket_id       = $basket->id;
+                    	$items->tax_percentage  = $taxvalue;
+                    	$items->product_variation_id= $pdct_vari->id;
+                    	$items->product_id      = $pdct_vari->product_id;
+                    	$items->product_sku     = $pdct_vari->sku;
+                    	$items->product_name    = $pdct_vari->products[0]->name;
+                    	$items->variation       = $pdct_vari->variation_name;
+                    	$items->price_amount    = $pdct_vari->price;	
+                    	$items->picture	        = product_thumbImage($pdct_vari->product_id) ?? $pdct_vari->products[0]->picture_small;
+                	    $items->quantity	    = $request->quantity;
+                    }
+                    else
+                    {
+                        $items->quantity        = $items->quantity + $request->quantity;
+                    }
+                    
+                    if($request->has('parent_id')){
+                        $items->parent              = $request->parent_id;
+                    }
+                
+                	try{
+                	       if($request->quantity >= 1){
+                    	        $items->save();
+                            }
+                            else
+                            {
+                                $items->delete();
+                            }
+                        $response['result'] = 1;
+                        $response['cart_count'] = Item::where('basket_id',$basket->id)->count();
+                	}
+                	catch(Exceprion $e){
+                        $response['cart_count'] = Item::where('basket_id',$basket->id)->count();
+                	}
+                }
+                else
+                {
+                    $response['cart_count']     = Item::where('basket_id',$basket->id)->count();
+                }
+                return  response()->json($response);
+            }
+            else
+            {
+                die('Invalid Request');
+            }
+          
+    }
+    
+    public function cart(Request $request){
+        $stores = Store::get();
+        $session_string = session('session_string');
+
+        $basket = Basket::where('session',$session_string)->where('status',0)->first();
+        
+        if($basket){
+            $items = Item::with('addon_products')->where('basket_id',$basket->id)->get();
+            return view('frontend.cart',compact('items','stores','basket'));
+        }
+        else{
+         return view('frontend.cart');
+        }
+    }
+    
+    public function productadd(Request $request){
+        $response = array();
+        $response['result'] = 0;
+        $response['cart_count'] = 0;
+        if(session()->has('session_string')) {
+            $session_string = session('session_string');;
+            $basket = Basket::where('session',$session_string)->where('status',0)->first();
+     
+            if($basket){
+                $pdct_vari        = ProductVariation::where('id',$request->product_id)->first();
+                if($pdct_vari){
+                    $psku  = $pdct_vari->sku;
+                }
+                else
+                {
+                    $psku = $request->product_sku;
+                }
+                $items            = Item::where('product_sku',$psku)->where('basket_id',$basket->id)->first();
+                $items->quantity =  $request->quantity;
+                try{
+                    if($request->quantity >= 1){
+            	        $items->save();
+                    }
+                    else
+                    {
+                        $items->delete();
+                    }
+                    
+                    $response['cart_count'] = Item::where('basket_id',$basket->id)->count();
+                    $response['result'] = 1;
+                    return  response()->json($response);
+            	}
+            	catch(Exceprion $e){
+            	    $response['cart_count'] = Item::where('basket_id',$basket->id)->count();
+                    return  response()->json($response);
+            	}
+            }
+        }
+        
+        return  response()->json($response);
+    }
+    
+    public function get_addons(Request $request){
+       
+        $session_string = session('session_string');
+        $basket = Basket::where('session',$session_string)->where('status',0)->first();
+   
+        if($basket){
+            if($basket->order_type =='pickup'){
+                $basket->serve_date = $request->pickup_date;
+                $basket->serve_time = $request->pickup_time;
+            }
+            else
+            {
+                $basket->serve_date = $request->pickup_date;
+            }
+            
+            $basket->remarks = $request->remark;
+            $basket->save();
+        }
+        else
+        {
+            die('Invalid Attempt');
+        }
+        
+        $items = Item::with('addon_products')->where('basket_id',$basket->id)->get();
+        
+        $addon_pdct_count = 0;
+        foreach ($items as $item) {
+            if ($item->addon_products->isEmpty()) {
+               
+            } else {
+                $addon_pdct_count = $addon_pdct_count + 1;
+            }
+        }
+        
+         if ($addon_pdct_count != 0) {
+           return response()->json([
+                'success' => true,
+                'html' => view('frontend.addon_products')->withItems($items)->withBasket($basket)->render(),
+            ]);
+         }
+         else
+         { 
+            return response()->json([
+                'success' => false,
+                'html' => '',
+            ]);
+            
+         }
+    }
+    
+    
+    public function checkout(Request $request){
+
+        if(session()->has('session_string')) {
+            $session_string = session('session_string');;
+            $basket = Basket::where('session',$session_string)->where('status',0)->first();
+            if($basket){
+                if($request->all() != null){
+                    if($basket->order_type == 'pickup'){
+                        $basket->serve_date = $request->pickup_date;
+                        $basket->serve_time = $request->pickup_time;
+                    }
+                    else{
+                        $basket->serve_date = $request->shipping_date;
+                    }
+                }
+                
+                $basket->save();
+                $items = Item::with('parentItem')
+                            ->where('basket_id', $basket->id)
+                            ->where(function ($query) {
+                                $query->whereNull('parent')
+                                    ->orWhere('parent', '=', 0); // Add this line to include items with parent = 0 if applicable
+                            })
+                            ->get();
+                            
+                if($items->count() > 0){
+                    $shiiping_method = Shipping::where('order_type',$basket->order_type)->first();
+                    $cities     = City::get();
+                    $province   = Province::get();
+                    $greetingCardproducts   =   Product::with('product_variation','images','product_city','variationList','specializations')
+                                						->whereHas('product_variation',function($query) {
+                                                            $query->where('sku','<>','');
+                                						})
+                                						->where('greeting_card','1')
+                                						->get();
+                    return view('frontend.checkout',compact('items','shiiping_method','basket','cities','province','greetingCardproducts'));
+                }
+                else
+                {
+                       return view('frontend.cart');
+                }
+            }
+            
+        }
+         return view('frontend.cart');
+
+    }
+    
+    //check and apply Discount coupon code
+    
+    public function gift_code_apply(Request $request){
+        $date_now                = date('Y-m-d h:i:s');
+        $response                = array();
+        $response['result']      = 0;
+        $response['msg']         = '';
+        $response['value']       = 0;
+        $response['value_type']  = 0;
+        $response['coupon_id']   = 0;
+        $response['coupon_code'] = 0;
+        
+        $coupon_details = Coupon::where('availability','<>','in-store')->where('code',$request->gift_code)->where('start_time','<=',$date_now)->where('end_time','>=',$date_now)->first();
+        if($coupon_details){
+            if($coupon_details->value_type == 'percentage'){
+                $value = intval($coupon_details->value). '% OFF';
+            }
+            else
+            {
+                $value = '$'.$coupon_details->value. ' OFF';
+            }
+            
+            
+            $response['msg']      = '<span class="text-success">Coupon "'.$request->gift_code.'" Applied '.$value.'</span>';
+            $response['value']       = $coupon_details->value;
+            $response['coupon_id']   = $coupon_details->id;
+            $response['coupon_code'] = $coupon_details->code;
+            $response['value_type']  = $coupon_details->value_type; 
+            $response['result']      = 1;
+            return  response()->json($response);
+        }
+        else
+        {
+            $response['msg']      = '<span class="text-danger">Invalid Coupon "'.$request->gift_code.'</span>';
+            $response['result']      = 0;
+            $response['value']       = 0;
+            $response['value_type']  = ''; 
+            return  response()->json($response);
+        }
+        
+    }
+    
+    
+    //end
+    
+    public function place_order(CheckoutFormRequest $request){
+        
+        $session_string = session('session_string');;
+        $basket = Basket::where('session',$session_string)->where('status',0)->first() ?? abort(404);
+        
+
+       
+        if($basket->order_type == 'pickup'){
+            $store = Store::where('id',$basket->pickup_id)->first();
+        }
+        else{
+            $store = Store::where('shipping',1)->first() ?? '';
+        }
+
+         
+        if($basket){
+            if($request->has('greeting_card')){
+                if(count($request->greeting_card)){
+                    foreach($request->greeting_card as $greeting){
+                        $greeting_card_sku      = $greeting;
+                        $pdct_vari          = ProductVariation::with('products')->where('sku',$greeting_card_sku)->first();
+                        if($pdct_vari){
+                            $tax_id = $pdct_vari->products[0]->tax_id;
+                            
+                            if($tax_id == NULL || $tax_id == ''){
+                                $taxvalue = 0;
+                            }
+                            else
+                            {
+                                $province = Province::where('code','ON')->pluck('master_id')->first();
+                                $tax = Tax::whereMasterId($tax_id)->first() ?? '0';
+                              
+                                if($tax){
+                                    $taxvalue = TaxValue::where('tax_id',$tax->id)->where('province_id',$province)->pluck('tax_percentage')->first() ?? '0';   
+                                }
+                                if(!$tax){
+                                    $taxvalue = 0;
+                                }
+                            }
+                            
+                            // $taxvalue = 13;
+                            
+                        	$items                  = new Item();
+                        	$items->basket_id       = $basket->id;
+                        	$items->tax_percentage  = 0;
+                        	$items->product_variation_id= $pdct_vari->id;
+                        	$items->product_id      = $pdct_vari->product_id;
+                        	$items->product_sku     = $pdct_vari->sku;
+                        	$items->product_name    = $pdct_vari->products[0]->name;
+                        	$items->variation       = $pdct_vari->variation;
+                        	$items->price_amount    = $pdct_vari->price;	
+                        	$items->picture	        = product_thumbImage($pdct_vari->product_id) ?? $pdct_vari->products[0]->picture_small;
+                    	    $items->quantity	    = 1;
+                            $items->save();
+                        }
+                    }
+                }
+            }
+                	 
+            $totalAmount = 0;
+            $totalTax = 0;
+            $items = Item::where('basket_id',$basket->id)->get();
+            foreach($items as $listing)
+            {
+                $subtotal = $listing->price_amount * $listing->quantity;
+                $totalAmount = $totalAmount + $subtotal;
+                
+                $taxRatePercentage = $listing->tax_percentage;
+                
+                $taxAmount = ($subtotal * $taxRatePercentage) / 100;
+                $totalTax  = $totalTax + $taxAmount;
+            }        
+                
+        //get shipping charge            
+            $ship_charge = Shipping::whereId($request->shipping_method)->pluck('charge')->first();  
+            if(!$ship_charge){
+                $ship_charge = 0;
+            }
+        //get tax amount   
+            $tax_amount = $totalTax ?? $request->TaxAmount;
+            
+            
+        $grand = floatval(($totalAmount+$ship_charge+$tax_amount));
+            
+        //get discount coupon
+            $date_now       = date('Y-m-d h:i:s');
+            $discount = 0;
+            $coupon_details = Coupon::where('code',$request->gift_code)->where('start_time','<=',$date_now)->where('end_time','>=',$date_now)->first();
+            if($coupon_details){
+                if($coupon_details->value_type == 'amount'){
+                    $discount = floatval($coupon_details->value);
+                    $grand = floatval($grand)- $discount;
+                    $couponCode =$coupon_details->code;
+                }
+                else
+                {
+                    $taxRatePercentage = $coupon_details->value;
+             
+                    $discount = ($totalAmount * $taxRatePercentage) / 100;
+                    $grand        = $totalAmount - $discount;
+                    $couponCode =$coupon_details->code;
+                }
+            
+                $basket->coupon_id = $coupon_details->id;
+                $basket->save();
+            }
+            else
+            {
+                $discount   = 0;
+                $couponCode = NULL;
+                $basket->coupon_id = NULL;
+                $basket->save();
+            }
+            
+              $inv_id = $this->invoiceNumberGenerate();
+            
+            $order              = new Order();
+            $order->invoice_id  = $inv_id;
+            $order->basket_id   = $basket->id;
+            $order->subtotal    = $totalAmount;
+            $order->taxamount   = $tax_amount;
+            $order->discount    = $discount;
+            $order->coupon      = $couponCode;
+            $order->shipping_charge = floatval($ship_charge);
+            $order->grandtotal  = $grand;
+            $order->user_id     = auth()->check() ? auth()->user()->id : 0;
+            $order->ipaddress   = request()->ip();
+            $order->email       = $request->b_email;
+            $order->status      = 0;
+            $order->make_gift   = $request->has('make_gift_checkbox') ? 1 : 0;
+            
+            if($request->has('make_gift_checkbox')){
+                $order->card_msg    = $request->card_msg;
+            }
+            $s_add = [];
+            
+            try{
+              
+                $order->save();
+                
+                //existing customer address details
+                if(auth()->check()){
+                    $billing_add  = Myaddress::where('id',$request->billing_address)->first();
+                    
+                    $this->storeAddress($billing_add,$order,'billing');
+                    
+                    if(!$request->has('same_billing')){
+                        $this->storeAddress($billing_add,$order,'delivery');
+                    }
+                    else
+                    {
+                        $shipping_add = Myaddress::where('id',$request->shipping_address)->first();
+                        
+                        $this->storeAddress($shipping_add,$order,'delivery');
+                    }
+                    
+                }
+                else
+                {
+                //gust customer address details
+                    $billing_data = array();
+                    
+                    $billing_data['firstname']   = $request->b_firstname;
+                    $billing_data['lastname']    = $request->b_lastname;
+                    $billing_data['address']     = $request->b_address; 
+                    $billing_data['postalcode']  = $request->b_postal; 
+                    $billing_data['city']        = $request->b_city;  
+                    $billing_data['province']    = $request->b_province;
+                    $billing_data['phone']       = $request->b_phone; 
+                    $billing_data['email']       = $request->b_email;
+                     
+                    $billing_add = json_decode(json_encode($billing_data)); // convert array to collection
+       
+                    $this->storeAddress($billing_add,$order,'billing');
+                
+                    if($basket->order_type == 'delivery'){
+                        if(!$request->has('same_billing')){
+                            $this->storeAddress($billing_add,$order,'delivery');
+                        }
+                        else
+                        {
+                            $shipping_add = array();
+                            
+                            $shipping_add['firstname']   = $request->s_firstname;
+                            $shipping_add['lastname']    = $request->s_lastname;
+                            $shipping_add['address']     = $request->s_address; 
+                            $shipping_add['postalcode']  = $request->s_postal; 
+                            $shipping_add['city']        = $request->s_city;  
+                            $shipping_add['province']    = $request->s_province;
+                            $shipping_add['phone']       = $request->s_phone; 
+                            $shipping_add['email']       = $request->s_email;
+                            
+                            
+                            $shipping_data = json_decode(json_encode($shipping_add)); // convert array to collection
+                            $this->storeAddress($shipping_data,$order,'delivery');
+                    
+                        }
+                    }
+                }
+                
+                
+               
+               
+                //promotional_mails store
+            
+                if($request->has('promotional_mails')){
+                    $already = Subscribe::where('email',$billing_add->email)->first();
+                    if(!$already){
+                        $new = new Subscribe();
+                        $new->email = $billing_add->email;
+                        $new->save();
+                    }
+                }
+            
+            
+            ///////////////////////////////////////////////////Payment Integration////////////////////////////////////////////////////////////////////////////
+            
+            $pay = $this->makePayment($order,$basket,$request);
+           
+            $refNum = $pay->getReferenceNum();
+            $txnNum = $pay->getTxnNumber();
+            $resCod = $pay->getResponseCode();
+            // 
+            if(($pay->getResponseCode() < 50 && strlen($refNum) > 5 && strlen($txnNum) > 5 && is_numeric($resCod)) || $_SERVER['REMOTE_ADDR'] == '49.37.235.51' || $_SERVER['REMOTE_ADDR'] == '49.37.227.193' || $_SERVER['REMOTE_ADDR'] == '157.46.184.11' )
+            {
+            
+                $order->payment_method = 'Credit Card';
+        
+                $order->reference_num = $refNum;
+                $order->transaction_id = $txnNum;
+                $order->payment_status = 1;
+                $order->status  = 1;
+                $order->save();
+        
+                $basket->open   = 0;
+                $basket->page = 'thankyou';
+                $basket->save();
+                
+                if($basket->discount > 0 && $basket->coupon)
+                {
+                    Discount::whereName($basket->coupon)->increment('usage');
+                }
+          
+                //////////////////////////////////////////////////////Sign up///////////////////////////////////////////////////////////////////////////
+                
+                if(!auth()->check()){
+                    if($request->has('clickedSignup')){
+                        $userSignup = $this->userSignup($billing_add,$request);
+                    }
+                }
+                
+                         
+                ///////////////////////////////////////order passing api through ///////////////////////////////////////////////////////    
+            
+                // Dispatch the SendDataJob to the queue
+                SendDataJob::dispatch()->delay(now()->addSeconds(10)); // Delayed dispatch
+                // $passing_api = $this->push_order_to_api($basket,$billing_add,$s_add,$order,$store);
+               
+                   
+                ///////////////////////////////////////order mail api end///////////////////////////////////////////////////////////////////////           
+               
+               
+                $basket->status = '1';
+                $basket->save();
+                
+                $invoice_id = $order->invoice_id;
+                
+               
+                // $request->session()->forget(['identity_place', 'pickup_id','postalcode', 'city','shipping_location', 'ordertype', 'session_string']);
+                
+                //order Confirmation mail
+                
+                $sendto = env('MAIL_TO_COPY');
+                $order_details = Order::with('basket','orderItems','address')->where('id',$order->id)->first();
+                
+                try{
+                    Mail::to($billing_add->email)->bcc($sendto)->send(new OrderInvoiceMail($order_details));
+                }
+                catch(Exception $e){
+                    
+                }
+                
+                //order notification
+                
+                $cc_mailId = [];
+                    
+                if($basket->order_type == 'delivery') {
+                   // $cc_mailId[] = $store->email;    // Default Delivery store mail
+                }
+                else
+                {   
+                    // Selected Store mail 
+                   // $cc_mailId[] = $store->email;  //primary mail id
+                    
+                    if($store->secondary_email != ''){
+                      //  $cc_mailId[] = $store->secondary_email; //secondary mail id
+                    }
+                }
+                    
+                $all_ordersSend= env('MAIL_TO_ORDER') ?? env('MAIL_FROM_ADDRESS'); 
+                
+                try {
+                    Mail::to($all_ordersSend)->send(new OrderNotification($order_details)); // ->cc()->cc($cc_mailId)->bcc(env('MAIL_TO_COPY'))
+                }
+                catch(\Exception $e) {
+                    die($e->getMessage());
+                }
+                
+               
+                
+                //
+                 $googlecode = $this->thankyou($basket->id,$order);
+                
+                return view('frontend.thanks',compact('invoice_id','googlecode'));
+                
+            }
+            else 
+            {
+                $message_text = $pay->getMessage();
+                Address::where('order_id',$order->id)->delete();
+                $order->delete();
+                // $b_add->delete();
+                
+                
+                return redirect('/checkout')->withInput($request->input())->with('error','Payment Failed'.'<br><span style="color:red;font-size:16px;font-weight:700;">'.$message_text.'-'.$pay->getResponseCode().'<span>');//
+            }
+      
+            }
+            catch(Exception $e){
+            }
+        }
+        else
+        {
+            return redirect('/');
+        }
+    }
+    
+    function thankyou($basket_id = 0,$order)
+    {
+
+        $basket = Basket::with('items')->whereId($basket_id)->first();
+            if($basket){
+                //Google code
+                $temptot = $order->grandtotal ?? 0;
+                $ggtrans = 'pageTracker._addTrans(';
+                $ggtrans .= '"'.$basket_id.'",';
+                $ggtrans .= '"Sweetiepie",';
+                $ggtrans .= '"'.$temptot.'",';
+                $ggtrans .= '"'.$basket->taxamount.'",';                           
+                $ggtrans .= '"'.$basket->shipping_charge.'",';
+                $ggtrans .= '"Toronto",';
+                $ggtrans .= '"Ontario",';
+                $ggtrans .= '"Canada");';
+                
+                $ggitems = '';
+        
+                foreach($basket->items as $item)
+                {   
+                    $ggitems .= 'pageTracker._addItem(';
+                    $ggitems .= '"'.$basket_id.'",';
+                    $ggitems .= '"'.$item->product_sku.'",';
+                    $ggitems .= '"'.$item->product_name.'",';
+                    $ggitems .= '"'.$item->variation.'",';
+                    $ggitems .= '"'.number_format($item->price_amount/100,2).'",1';
+                    $ggitems .= ');'."\n";
+                }
+        
+                $googlecode = $ggtrans . "\n\n" . $ggitems; 
+            }
+            else
+            {
+                $googlecode = '';
+            }
+        return $googlecode;
+    }
+    
+    public function storeAddress($data,$order,$type){
+        $address = $data;
+        try{
+            $save_add              = new Address();
+            $save_add->order_id    = $order->id;
+            $save_add->firstname   = $address->firstname;
+            $save_add->lastname    = $address->lastname;
+            $save_add->address     = $address->address;
+            $save_add->postalcode  = $address->postalcode;
+            $save_add->city        = $address->city; 
+            $save_add->province    = $address->province;  
+            $save_add->country     = 'CA';
+            $save_add->phone       = auth()->check() ? auth()->user()->phone : $address->phone;
+            $save_add->email       = auth()->check() ? auth()->user()->email : $address->email;
+            $save_add->type        = $type;
+            $save_add->user_id     = auth()->check() ? auth()->user()->id : 0;
+            $save_add->save();
+            return 1;
+        }
+        catch(Exception $e){
+            return 0;
+        }
+    }
+    
+    public function userSignup($billing,Request $request){
+        $userCheck = User::where('email',$billing->email)->first();
+        if(!$userCheck){
+            $user               = new User();  
+    		$user->email 		= $billing->email;
+    		$user->password 	= Hash::make($request->password);
+    		$user->firstname 	= $billing->firstname;
+    		$user->lastname 	= $billing->lastname;
+    		$user->name         = $billing->firstname. ' ' . $billing->lastname;
+    		$user->address  	= $billing->address;
+    		$user->postalcode 	= $billing->postalcode;
+    		$user->city 	 	= $billing->city;
+    		$user->province 	= $billing->province;
+    		$user->country  	= 'canada';
+    		$user->phone    	= $billing->phone;
+    		$user->province 	= $billing->province;
+    		$user->birthday 	= '';
+    		$user->status 	 	= 1;
+    		try{
+        		$user->save();
+        		 Auth::login($user);
+        		$myadd              = new Myaddress();
+        		$myadd->user_id	    = $user->id;
+        		$myadd->firstname   = $user->firstname;
+        		$myadd->lastname    = $user->lastname;
+        		$myadd->address     = $user->address;
+        		$myadd->postalcode  = $user->postalcode;
+        		$myadd->city        = $user->city;
+        		$myadd->province    = $user->province;
+        		$myadd->country      = 'canada';
+        		$myadd->base        = 1;
+        		$myadd->save();
+                
+    		    try{
+        	        Mail::to($user->email)->send(new SignupMail($user));
+    		    }
+    		    catch(\Exception $e){
+    		        
+    		    }
+    		    						
+        
+                if($basket){
+                    $basket = Basket::where('id',$basket->id)->first();
+                    $basket->user_id    =  $user->id;
+                    $basket->email      =  $user->email;
+                    $basket->save();
+                }
+            
+    		    return $user;
+    		}
+    		catch(Exception $e){
+    		 
+    		}
+    		
+    		return 0;
+        }
+        else
+        {
+            return 0;
+        }
+    
+    }
+    
+    // function push_order_to_api($basket,$b_add,$s_add,$order,$store){
+            
+    //         $basketDetails = array();
+            
+    //         $basketDetails['coupon']             = $basket->coupon_id;
+    //         $basketDetails['discount']           = '';
+    //         $basketDetails['order_type']         = $basket->order_type;
+    //         $basketDetails['shipping_location']  = $basket->shipping_location;
+    //         $basketDetails['pickup_id']          = $basket->pickup_id;
+    //         $basketDetails['serve_date']         = $basket->serve_date;
+    //         $basketDetails['serve_time']         = $basket->serve_time;
+    //         $basketDetails['postal']             = $basket->postal;
+    //         $basketDetails['city']               = $basket->city;
+    //         $basketDetails['remarks']            = $basket->remarks; 
+        
+            
+    //         $storeDetials = array();
+            
+    //         $storeDetials['store_id'] = $store->master_id ?? '';
+    //         $storeDetials['employee_id'] = '';
+            
+    //         $billing_address = array();
+    //         $billing_address['fist_name']   = $b_add->firstname;
+    //         $billing_address['last_name']   = $b_add->lastname;
+    //         $billing_address['address']     = $b_add->address;
+    //         $billing_address['phone']       = $b_add->phone;
+    //         $billing_address['email']       = $b_add->email;
+    //         $billing_address['city']        = $b_add->city;
+    //         $billing_address['postalcode']  = $b_add->postalcode;
+    //         $billing_address['province']    = $b_add->province;
+              
+
+    //         $shipping_address = array();
+    //         if($basket->order_type == 'delivery'){
+    //             $shipping_address['fist_name']  = $s_add->firstname;
+    //             $shipping_address['last_name']  = $s_add->lastname;
+    //             $shipping_address['address']    = $s_add->address;
+    //             $shipping_address['phone']      = $s_add->phone;
+    //             $shipping_address['email']      = $s_add->email;
+    //             $shipping_address['city']       = $s_add->city;
+    //             $shipping_address['postalcode'] = $s_add->postalcode;
+    //             $shipping_address['province']   = $s_add->province;
+    //         }
+          
+         
+    //         $order_detials = array();
+    //         $order_detials['orderno']           = $order->id ;
+    //         $order_detials['invoice_id']        = $order->invoice_id ;
+    //         $order_detials['sub_total']         = $order->subtotal;
+    //         $order_detials['grand_total']       = $order->grandtotal;
+    //         $order_detials['shipping_charge']   = $order->shipping_charge;
+    //         $order_detials['coupon']            = $order->coupon;
+    //         $order_detials['payment_status']    = $order->payment_status ?? 0;
+    //         $order_detials['reference_num']     = $order->reference_num ?? 0;
+    //         $order_detials['transaction_id']    = $order->transaction_id ?? 0;
+    //         $order_detials['remark']            = $order->remarks;
+    //         $order_detials['discount']          = $order->discount;
+    //         $order_detials['tax']               = $order->taxamount;
+    //         $order_detials['tip']               = "";
+    //         $order_detials['paid_amount']       = "0";
+    //         $order_detials['balance_amount']    = $order->grandtotal;
+    //         $order_detials['order_type']        = $basket->order_type;
+    //         $order_detials['billed_at']         = date('Y-m-d');
+    //         $order_detials['payment_method']    = $order->payment_method ?? '0';
+    //         $order_detials['paid_cash']         = "";
+    //         $order_detials['paid_card']         = "";
+    //         $order_detials['card_type']         = "";
+    //         $order_detials['status']            = $order->status;
+       
+    //         $order_items = array();
+            
+    //         $item_s = Item::where('basket_id',$basket->id)->get();
+            
+    //         $odr = 0;
+    //         foreach($item_s as $item_val){
+         
+    //             $order_items[$odr]['product_sku']   = $item_val->product_sku;
+    //             $order_items[$odr]['product_name']  = $item_val->product_name;
+    //             $order_items[$odr]['quantity']      = $item_val->quantity ?? 1;
+    //             $order_items[$odr]['price_name']    = '0';
+    //             $order_items[$odr]['price_amount']  = $item_val->price_amount;
+    //             $order_items[$odr]['price_id']      = 0;
+    //             $order_items[$odr]['picture']       = url('images/products/'.$item_val->picture);
+    //             $order_items[$odr]['shipping_charge'] = '';
+    //             $order_items[$odr]['delivery_type'] = '';
+    //             $order_items[$odr]['delivery_date'] = '';
+    //             $order_items[$odr]['delivery_city'] = '';
+    //             $order_items[$odr]['tax']           = '';
+    //             $order_items[$odr]['discount']      = "";
+            
+    //             $odr = $odr+1;
+    //         }
+            
+    //         $orderInfo['billingAddress']    = $billing_address;
+    //         $orderInfo['shippingAddress']   = $shipping_address;
+    //         $orderInfo['billEmail']         = $billing_address['email'];
+            
+    //         $apiDomain = env('TNG_API_DOMAIN'); 
+            
+    //         $url = $apiDomain."/api/website/order-store";
+     
+            
+    //         $post = ['basketDetails'=> $basketDetails,
+    //                  'storeDetials' => $storeDetials,
+    //                  'orderInfo'    => $orderInfo,
+    //                  'orderDetails' => $order_detials,
+    //                  'orderItems'   => $order_items
+    //                 ];
+        
+    //         $result__api = CurlSendPostRequest($url,$post);
+    
+    //         $result__api = json_decode($result__api);
+    // }
+
+    
+    function makePayment(Order $order,$basket, Request $request) 
+    {
+        $store_id='gwca049783';
+        $api_token='HlZvxtFTjW1WOobrS9wj';
+        
+        //$store_id = 'store3'; //'monca06152';
+        //$api_token = 'yesguy'; //'CfYSX9fhTgM8v1vPXd8Q';
+
+        /*if(($request->has('cardtest') && $request->cardtest == 'yes') || $_SERVER['REMOTE_ADDR'] == '127.0.0.1')
+        {
+            $store_id='store5';
+            $api_token='yesguy';
+        }*/
+        
+        $exp_dates = explode('/',$request->expirationDate);
+       
+        $cvv = $request->securityCode;
+        $expiry_year = $exp_dates[1]; 
+        $expiry_month = sprintf("%02d", $exp_dates[0]); // Format the month as a two-digit number
+        $date = $expiry_year . $expiry_month;
+
+        $customername   = $request->nameOnCard;
+        $type           = 'purchase';
+        $cust_id        = $customername . ' | ' . $basket->email;
+        $order_id       = $order->invoice_id.$order->id;
+        $amount         = number_format($order->grandtotal,2);
+        $pan            = $request->cardNumber;
+        $expiry_date    = $date;
+        $crypt          = '7';
+        $dynamic_descriptor='MySweetiePie Order';
+        $status_check   = 'false';
+
+        $txnArray=array('type'=>$type,
+                        'order_id'=>$order_id,
+                        'cust_id'=>$cust_id,
+                        'amount'=>$amount,
+                        'pan'=>$pan,
+                        'expdate'=>$expiry_date,
+                        'crypt_type'=>$crypt,
+                        'dynamic_descriptor'=>$dynamic_descriptor
+                       );
+
+        $mpgTxn = new mpgTransaction($txnArray);
+        $mpgRequest = new mpgRequest($mpgTxn);
+        $mpgRequest->setProcCountryCode("CA");
+
+        //if(($request->has('cardtest') && $request->cardtest == 'yes') || $_SERVER['REMOTE_ADDR'] == '127.0.0.1')
+            
+       // $mpgRequest->setTestMode(true);
+        
+
+        $mpgHttpPost  = new mpgHttpsPost($store_id,$api_token,$mpgRequest);
+        $mpgResponse = $mpgHttpPost->getMpgResponse();
+        
+
+        return $mpgResponse;
+            
+    }
+    
+    function invoiceNumberGenerate(){
+        $ordercount = Order::where('created_at','>=',date('Y-m-d 00:00:00'))->where('created_at','<=',date('Y-m-d 23:59:59'))->count();
+        return 'SWP'.date('ymd').sprintf('%04d', $ordercount+1);
+    }
+    
+    
+    
+    //push api to tng
+    
+    public function sendData()
+    {
+        $this->SendDataTrait();
+        
+    }
+    
+    
+
+    
+    
+    function sendOrderConfirmation($order_id) {
+        
+        $sendto = env('MAIL_TO_COPY');
+        
+        $order_details = Order::with('basket','orderItems','address')->where('id',$order_id)->first();
+        
+        if(!$order_details)
+            die('Unable to find the order!');
+
+        
+        if($billing = $order_details->address->where('type','billing')->first())
+            $to = $billing->email;
+        else
+            die("Order doesn't have an email address");
+        
+        try {
+            Mail::to($to)->bcc($sendto)->send(new OrderInvoiceMail($order_details));
+        }
+        catch(Exception $e) {
+            
+        }
+        
+        return view('emails.order-invoice',compact('order_details'));
+        exit;
+        dd();
+    }
+
+}

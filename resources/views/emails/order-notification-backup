@@ -1,0 +1,190 @@
+@extends('layouts.email')
+
+@section('content')
+
+
+<div style="padding: 0px 30px;">
+   <div>
+      
+      <div style="display:flex;justify-content: center; margin-top:10px">
+         <div>
+            <p style="font-size:14px;margin:0 0 6px 0;"><span
+               style="font-weight:bold;display:inline-block;min-width:150px">Order Status</span><b
+               style="color:green;font-weight:normal;margin:0">Success</b></p>
+            <p style="font-size:14px;margin:0 0 6px 0;"><span
+               style="font-weight:bold;display:inline-block;min-width:146px">Invoice Number</span>
+               #{{$order_details->invoice_id}}
+            </p>
+            <p style="font-size:14px;margin:0 0 0 0;"><span
+               style="font-weight:bold;display:inline-block;min-width:146px">Order Amount</span> {{getPrice($order_details->grandtotal)}}</p>
+         </div>
+         <div style="text-align: right;">
+            <img style="width: 100px; "
+               src="https://cdn.dribbble.com/users/3670719/screenshots/11315097/media/cea1ccb72bd93e291c398f6b40313c64.gif"
+               alt="">
+         </div>
+      </div>
+      <p></p>
+      
+      <div style=" display: flex; border: 1px solid rgba(0,0,0,.1); border-radius: 5px; ">
+         @if($billing_address = $order_details->address->where('type','billing')->first())
+         <div
+            style="background-color: #f3f3f3; padding: 15px 40px;border-top-left-radius: 5px; border-bottom-left-radius: 5px; width: 50%; border-right: 1px solid rgba(0,0,0,.1);">
+            <p style="font-weight: 700; font-size: 14px; color: #333; margin: 3px 0;">CUSTOMER INFORMATION</p>
+            <div style="display: flex; justify-content: space-between;">
+               <div>
+                  <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{titleText($billing_address->firstname)}} {{titleText($billing_address->lastname)}}
+                  </p>
+                  <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{titleText($billing_address->address)}}</p>
+                  <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{$billing_address->postalcode}}, {{titleText($billing_address->city)}}, {{titleText($billing_address->province)}}.</p>
+               </div>
+            </div>
+         </div>
+         @endif
+         @if($delivery_address = $order_details->address->where('type','delivery')->first())
+         <div
+            style="background-color: #f3f3f3; padding: 10px 40px; border-top-right-radius: 5px; border-bottom-right-radius: 5px; width: 50%;">
+            <p style="font-weight: 700; font-size: 14px; color: #333; margin: 3px 0;">DELIVERY DETAILS</p>
+            <div style="display: flex; justify-content: space-between;">
+               <div>
+                  <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{titleText($delivery_address->firstname)}} {{titleText($delivery_address->lastname)}}
+                  </p>
+                  <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{titleText($delivery_address->address)}}</p>
+                  <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{$delivery_address->postalcode}}, {{titleText($delivery_address->city)}}, {{titleText($delivery_address->province)}}.</p>
+                  <p style="font-weight:600; font-size: 14px; cololr:#333;margin: 3px 0;">Expected delivery date: {{dateOnly($order_details->basket->serve_date)}}</p>
+               </div>
+            </div>
+         </div>
+         @else
+            @php
+                $pickupAddress = App\Models\Store::where('id',$order_details->basket->pickup_id)->first();
+                // 
+            @endphp
+                @if($pickupAddress)
+                <div
+                    style="background-color: #f3f3f3; padding: 10px 40px; border-top-right-radius: 5px; border-bottom-right-radius: 5px; width: 50%;">
+                    <p style="font-weight: 700; font-size: 14px; color: #333; margin: 3px 0;">PICKUP DETAILS</p>
+                    <div style="display: flex; justify-content: space-between;">
+                       <div>
+                          <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{titleText($pickupAddress->name)}}
+                          </p>
+                          <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{titleText($pickupAddress->address)}}</p>
+                          <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">{{$pickupAddress->postal_code}}, {{$pickupAddress->city}}, {{$pickupAddress->province}}.</p>
+                          <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">Date : {{dateOnly($order_details->basket->serve_date)}}</p> 
+                          <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;">Time : {{$order_details->basket->serve_time}}</p> 
+                          <p style="font-weight:600; font-size: 14px; color: #333;margin: 3px 0;"><a target="_new" href="{{url('/stores/'.$pickupAddress->slug)}}">View Location</a></p>
+
+                        </div>
+                    </div>
+                 </div>
+                    
+                @endif
+         @endif
+      </div>
+      <p></p>
+      <br>
+      <div>
+         <table style="width: 100%;">
+            <tr>
+               <th
+                  style="background: #f3f3f3;font-weight: 600; font-size: 14px; text-align: left;padding: 10px 10px;">
+                  ITEM
+               </th>
+               <th
+                  style="background: #f3f3f3;font-size: 14px; font-weight: 500; text-align: left;padding: 10px 10px;">
+                  QTY
+               </th>
+               <th
+                  style="background: #f3f3f3;color: red;font-size: 14px; font-weight: 500; text-align: left;padding: 10px 10px;">
+                  PRICE
+               </th>
+            </tr>
+            @foreach($order_details->orderItems->whereNull('parent') as $items_listing)
+            <tr>
+               <td
+                  style="font-weight: 600; font-size: 14px; text-align: left;padding: 10px 10px; display: flex; align-items: center; border-bottom: 1px solid rgba(0,0,0,.1);">
+                  <img width="100" onerror="this.onerror=null;this.src={{asset('/assets/images/dummy-product.jpg')}};" src="{{asset('images/products/'.$items_listing->picture)}}" alt="">
+                  <p style="margin-left:10px">{{$items_listing->product_name}} <br> {{$items_listing->variation}}</p>
+               </td>
+               <td
+                  style=" font-size: 14px; text-align: left; padding: 10px 10px;border-bottom: 1px solid rgba(0,0,0,.1);">
+                  {{$items_listing->quantity}} 
+               </td>
+               <td
+                  style="font-weight: 600; font-size: 14px; text-align: right; padding: 10px 10px; border-bottom: 1px solid rgba(0,0,0,.1);">
+                  {{getPrice($items_listing->price_amount * $items_listing->quantity)}}
+               </td>
+            </tr>
+            @if($parentItem = $items_listing->parentItem)
+            @foreach($parentItem as $item_list)
+            <tr class="products-checkout col-12">
+               <td
+                  style="font-weight: 600; font-size: 14px; text-align: left;padding: 50px; display: flex; align-items: center; border-bottom: 1px solid rgba(0,0,0,.1);">
+                  <img width="90" onerror="this.onerror=null;this.src={{asset('/assets/images/dummy-product.jpg')}};"  src="{{asset('images/products/'.$item_list->picture)}}" alt="">
+                  <p style="margin-left:10px">{{$item_list->product_name}}</p>
+               </td>
+               <td style="padding-left: -50px;">
+                  {{$item_list->quantity}}
+               </td>
+               <td style="font-weight: 600; font-size: 14px; text-align: left; padding: 10px 10px; color: red;border-bottom: 1px solid rgba(0,0,0,.1);">
+                  {{getPrice($item_list->price_amount * $item_list->quantity)}}
+               </td>
+            </tr>
+            @endforeach
+            @endif
+            @endforeach
+         </table>
+      </div>
+      <p></p>
+      <table cellpadding="7" cellspacing="0" align="right">
+            @if ($order_details->subtotal > 0)
+                <tr>
+                    <th align="left">Subtotal</th>
+                    <td align="right">{{ getPrice($order_details->subtotal) }}</td>
+                </tr>
+            @endif
+            
+            @if ($order_details->discount > 0)
+                <tr>
+                    <th align="left">Discount</th>
+                    <td align="right">{{ getPrice($order_details->discount) }}</td>
+                </tr>
+            @endif
+            
+            @if ($order_details->shipping_charge > 0)
+                <tr>
+                    <th align="left">Shipping</th>
+                    <td align="right">{{ getPrice($order_details->shipping_charge) }}</td>
+                </tr>
+            @endif
+            
+            @if ($order_details->taxamount > 0)
+                <tr>
+                    <th align="left">Tax</th>
+                    <td align="right">{{ getPrice($order_details->taxamount) }}</td>
+                </tr>
+            @endif
+            
+            @if ($order_details->grandtotal > 0)
+                <tr>
+                    <th align="left"><strong>Grand Total</strong></th>
+                    <td align="right"><strong>{{ getPrice($order_details->grandtotal) }}</strong></td>
+                </tr>
+            @endif
+
+      </table>
+      <div style="clear:both;float:none;"></div>
+      <hr>
+      <div style="padding: 10px 20px;">
+         <p style="margin: 0; font-size: 16px; font-weight: 500; text-align: center;">
+            If you have any questions or need further assistance, please don't hesitate to reach out to our friendly customer service team. Thank you again for being a part of the Sweetie Pie family!
+         </p>
+         <p style="text-align: right">
+            Warm regards,<br>
+            The Sweetie Pie Team
+         </p>
+      </div>
+   </div>
+</div>
+
+@endsection
